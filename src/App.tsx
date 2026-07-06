@@ -2,6 +2,7 @@ import { useAudioEngine } from "./hooks/useAudioEngine";
 import { useIsolatorControl, useStandardEffectControl } from "./hooks/useEffectControl";
 import { DeviceSettings } from "./components/DeviceSettings";
 import { LatencyMeter } from "./components/LatencyMeter";
+import { InputLevelMeter } from "./components/InputLevelMeter";
 import { ReleaseButton } from "./components/ReleaseButton";
 import { EffectPanel } from "./components/EffectPanel";
 import { IsolatorPanel } from "./components/IsolatorPanel";
@@ -43,7 +44,10 @@ function App() {
       </header>
 
       <DeviceSettings engine={engine} status={status} />
-      <LatencyMeter engine={engine} />
+      <div className="flex flex-wrap gap-3">
+        <LatencyMeter engine={engine} />
+        <InputLevelMeter engine={engine} active={status === "running"} />
+      </div>
 
       <main className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <IsolatorPanel

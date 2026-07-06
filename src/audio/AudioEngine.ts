@@ -9,7 +9,7 @@ import noiseProcessorUrl from "./worklets/noise-processor.js?url";
 import clickDetectorUrl from "./worklets/click-detector-processor.js?url";
 
 const RELEASE_RAMP_TIME_CONSTANT = 0.005;
-const CLICK_DETECT_TIMEOUT_MS = 3000;
+const CLICK_DETECT_TIMEOUT_MS = 5000;
 const EFFECT_ORDER: EffectId[] = ["isolator", "filterSweep", "crush", "delay", "reverb"];
 
 export class AudioEngine {
@@ -28,6 +28,9 @@ export class AudioEngine {
   private readonly outputStreamDestination: MediaStreamAudioDestinationNode;
   private readonly outputAudioEl: HTMLAudioElement;
   private usingCustomOutput = false;
+
+  private readonly inputAnalyser: AnalyserNode;
+  private readonly inputLevelBuffer: Float32Array<ArrayBuffer>;
 
   private clickDetector: AudioWorkletNode | null = null;
   private released = false;
@@ -67,6 +70,13 @@ export class AudioEngine {
     this.outputAudioEl.autoplay = true;
 
     this.masterGain.connect(context.destination);
+
+    // Live input level tap, independent of the effect chain — lets the UI show
+    // whether *any* signal from the selected input is reaching the browser at all.
+    this.inputAnalyser = context.createAnalyser();
+    this.inputAnalyser.fftSize = 512;
+    this.inputGain.connect(this.inputAnalyser);
+    this.inputLevelBuffer = new Float32Array(new ArrayBuffer(this.inputAnalyser.fftSize * 4));
   }
 
   static async create(): Promise<AudioEngine> {
@@ -198,6 +208,17 @@ export class AudioEngine {
     };
   }
 
+  /** Peak absolute sample value (0..1) over the current input buffer, for a live level meter. */
+  getInputLevel(): number {
+    this.inputAnalyser.getFloatTimeDomainData(this.inputLevelBuffer);
+    let peak = 0;
+    for (let i = 0; i < this.inputLevelBuffer.length; i++) {
+      const abs = Math.abs(this.inputLevelBuffer[i]);
+      if (abs > peak) peak = abs;
+    }
+    return peak;
+  }
+
   /**
    * Plays a short click on the output and listens for it on the input.
    * Requires a physical loopback cable (output -> input) on the audio interface.
@@ -206,8 +227,15 @@ export class AudioEngine {
     if (!this.clickDetector) {
       this.clickDetector = new AudioWorkletNode(this.context, "click-detector-processor", {
         numberOfInputs: 1,
-        numberOfOutputs: 0,
+        numberOfOutputs: 1,
       });
+      // Route through a silent gain into the destination-reachable graph: a
+      // worklet with only a dead-end input is not guaranteed to be pulled for
+      // processing every render quantum in every engine.
+      const silentSink = this.context.createGain();
+      silentSink.gain.value = 0;
+      this.clickDetector.connect(silentSink);
+      silentSink.connect(this.context.destination);
       this.inputGain.connect(this.clickDetector);
     }
 
@@ -229,19 +257,20 @@ export class AudioEngine {
         resolve(roundTrip);
       };
 
-      detector.port.postMessage({ type: "arm", threshold: 0.1 });
+      detector.port.postMessage({ type: "arm", threshold: 0.05 });
 
       const scheduledStartTime = this.context.currentTime + 0.05;
       const burst = this.context.createOscillator();
       burst.type = "square";
       burst.frequency.value = 880;
       const burstGain = this.context.createGain();
-      burstGain.gain.setValueAtTime(0.9, scheduledStartTime);
-      burstGain.gain.setValueAtTime(0, scheduledStartTime + 0.01);
+      burstGain.gain.setValueAtTime(0.95, scheduledStartTime);
+      burstGain.gain.setValueAtTime(0.95, scheduledStartTime + 0.15);
+      burstGain.gain.linearRampToValueAtTime(0, scheduledStartTime + 0.17);
       burst.connect(burstGain);
       burstGain.connect(this.testToneBus);
       burst.start(scheduledStartTime);
-      burst.stop(scheduledStartTime + 0.02);
+      burst.stop(scheduledStartTime + 0.18);
       burst.onended = () => {
         burst.disconnect();
         burstGain.disconnect();
